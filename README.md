@@ -187,3 +187,7 @@ The view `applications` is available in all queries with these columns:
 | `end_date`         | DATE    | NULL if missing |
 | `status`           | VARCHAR | open, waiting, interviewing, rejected, ghosted |
 | `source_url`       | VARCHAR |                 |
+
+## Closing Remarks
+
+This project was realised with the help of Claude Cowork and the Sonnet 4.6 model. Claude does not access my Obsidian vault, though.
