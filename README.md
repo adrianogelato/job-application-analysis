@@ -2,6 +2,14 @@
 
 Visualization of a personal job application process. The goal is to identify patterns in hiring timelines and rejection behaviour using a lightweight, fully local setup.
 
+## Initial Analysis Questions
+
+- What is the total number and share per status?
+- What is the average and distribution of days between application and rejection?
+- On which weekdays are rejections most commonly sent?
+- Which weekdays are my most active, i.e. with the most applications submitted?
+- How do applications, rejections, and interviews accumulate over time?
+
 ## Directory Structure
 
 ```
@@ -179,10 +187,3 @@ The view `applications` is available in all queries with these columns:
 | `end_date`         | DATE    | NULL if missing |
 | `status`           | VARCHAR | open, waiting, interviewing, rejected, ghosted |
 | `source_url`       | VARCHAR |                 |
-
-## Analysis Questions
-
-- What is the total number and share per status?
-- What is the average and distribution of days between application and rejection?
-- On which weekdays are rejections most commonly sent?
-- How do applications, rejections, and interviews accumulate over time?
