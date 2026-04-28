@@ -1,5 +1,5 @@
--- Applications by Weekday
--- Number of applications sent per day of the week (ordered Mon–Sun)
+-- Submissions by Weekday
+-- Number of applications submitted per day of the week (ordered Mon–Sun)
 
 SELECT
     CASE EXTRACT('isodow' FROM application_date)
@@ -14,7 +14,7 @@ SELECT
     COUNT(*)                                    AS count,
     MIN(EXTRACT('isodow' FROM application_date))        AS sort_order
 FROM applications
-WHERE status = 'rejected'
+WHERE status != 'open'
   AND application_date IS NOT NULL
 GROUP BY EXTRACT('isodow' FROM application_date)
 ORDER BY sort_order

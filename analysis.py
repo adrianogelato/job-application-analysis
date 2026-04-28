@@ -14,11 +14,26 @@ import duckdb
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data" / "applications.csv"
 QUERIES = ROOT / "queries"
 OUTPUT = ROOT / "docs" / "index.html"
+
+# ── Color scheme ──────────────────────────────────────────────────────────────
+# Status colors — used in the pie chart, one per tracking state
+COLOR_STATUS = {
+    "open": "lightgrey",
+    "waiting": "steelblue",
+    "interviewing": "seagreen",
+    "rejected": "tomato",
+    "ghosted": "slategrey",
+}
+# Comparison colors — used when plotting submissions vs rejections vs interviews
+COLOR_SUBMISSIONS = "cornflowerblue"  # all non-open submissions (multi-state aggregate)
+COLOR_REJECTIONS = "tomato"  # matches rejected status
+COLOR_INTERVIEWS = "seagreen"  # matches interviewing status
 
 
 # ── Data setup ────────────────────────────────────────────────────────────────
@@ -88,46 +103,114 @@ def validate_data(conn: duckdb.DuckDBPyConnection) -> None:
 
 def chart_status_overview(conn) -> go.Figure:
     df = run_query(conn, "01_status_overview.sql")
-    print(f"[status overview]\n{df.to_string()}\n")
-    fig = px.pie(
-        df,
-        values="count",
-        names="status",
-        title="Application Status Distribution",
-        hole=0.4,
-        category_orders={
-            "status": ["open", "waiting", "interviewing", "rejected", "ghosted"]
-        },
+    stats = run_query(conn, "07_summary_stats.sql").iloc[0]
+
+    def count(status):
+        rows = df[df["status"] == status]["count"]
+        return int(rows.values[0]) if len(rows) > 0 else 0
+
+    submitted_statuses = ["waiting", "interviewing", "rejected", "ghosted"]
+    submitted_total = sum(count(s) for s in submitted_statuses)
+    open_count = count("open")
+    total = submitted_total + open_count
+
+    fig = make_subplots(
+        rows=1,
+        cols=2,
+        column_widths=[0.6, 0.4],
+        specs=[[{"type": "xy"}, {"type": "table"}]],
     )
-    fig.update_traces(textinfo="label+value")
-    total = df["count"].sum()
+
+    for rank, (status, color) in enumerate(
+        [
+            ("open", COLOR_STATUS["open"]),
+            ("waiting", COLOR_STATUS["waiting"]),
+            ("interviewing", COLOR_STATUS["interviewing"]),
+            ("rejected", COLOR_REJECTIONS),
+            ("ghosted", COLOR_STATUS["ghosted"]),
+        ],
+        start=1,
+    ):
+        n = count(status)
+        fig.add_trace(
+            go.Bar(
+                y=[""],
+                x=[n],
+                name=status,
+                orientation="h",
+                marker_color=color,
+                text=str(n) if n > 0 else "",
+                textposition="inside",
+                insidetextanchor="middle",
+                textfont=dict(size=13, color="white"),
+                legendrank=rank,
+            ),
+            row=1,
+            col=1,
+        )
+
+    duration_days = (stats["latest_submission"] - stats["first_submission"]).days
+    weeks = duration_days / 7
+    submissions_per_week = int(stats["total_submitted"]) / weeks if weeks > 0 else 0
+
+    table_headers = ["Metric", "Value"]
+    table_rows = [
+        ["Total", str(total)],
+        ["First submission", str(stats["first_submission"])[:10]],
+        ["Latest submission", str(stats["latest_submission"])[:10]],
+        ["Duration", f"{duration_days} days"],
+        ["Submissions / week", f"{submissions_per_week:.1f}"],
+        ["Waiting", str(int(stats["total_waiting"]))],
+        ["Interviewing", str(int(stats["total_interviewing"]))],
+        ["Rejected", str(int(stats["total_rejected"]))],
+        ["Ghosted", str(int(stats["total_ghosted"]))],
+    ]
+
+    fig.add_trace(
+        go.Table(
+            header=dict(
+                values=table_headers,
+                align="left",
+                font=dict(size=12),
+            ),
+            cells=dict(
+                values=list(zip(*table_rows)),
+                align="left",
+                font=dict(size=12),
+            ),
+        ),
+        row=1,
+        col=2,
+    )
+
     fig.update_layout(
-        annotations=[
-            dict(
-                text=str(total),
-                x=0.5,
-                y=0.5,
-                font_size=24,
-                showarrow=False,
-            )
-        ]
+        title=f"1 · Application Status Overview  ·  {total} total",
+        barmode="stack",
+        xaxis=dict(visible=False),
+        yaxis=dict(showticklabels=False, showgrid=False, zeroline=False),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.3,
+            xanchor="left",
+            x=0,
+            traceorder="normal",
+        ),
     )
     return fig
 
 
 def chart_rejection_duration(conn) -> go.Figure:
     df = run_query(conn, "02_rejection_duration.sql")
-    print(
-        f"[rejection duration] {len(df)} rows, days range: {df['days_to_rejection'].min()}–{df['days_to_rejection'].max()}\n"
-    )
     avg = df["days_to_rejection"].mean()
     median = df["days_to_rejection"].median()
 
     fig = px.histogram(
         df,
         x="days_to_rejection",
-        title=f"Days to Rejection  ·  mean {avg:.1f} d  ·  median {median:.1f} d",
-        labels={"days_to_rejection": "Days from Application to Rejection"},
+        title=f"2 · Days to Rejection  ·  mean {avg:.1f} d  ·  median {median:.1f} d",
+        labels={"days_to_rejection": "Days from Submission to Rejection"},
+        color_discrete_sequence=[COLOR_REJECTIONS],
     )
     fig.update_traces(xbins=dict(size=1))
     fig.add_vline(
@@ -139,87 +222,165 @@ def chart_rejection_duration(conn) -> go.Figure:
     return fig
 
 
-def chart_rejections_by_weekday(conn) -> go.Figure:
-    df = run_query(conn, "03_rejections_by_weekday.sql")
-    print(f"[rejections by weekday]\n{df.to_string()}\n")
-    fig = px.bar(
-        df,
-        x="weekday",
-        y="count",
-        title="Rejections by Day of Week",
-        labels={"weekday": "Day", "count": "Rejections"},
-        category_orders={
-            "weekday": [
-                "Monday",
-                "Tuesday",
-                "Wednesday",
-                "Thursday",
-                "Friday",
-                "Saturday",
-                "Sunday",
-            ]
-        },
+def chart_weekday_activity(conn) -> go.Figure:
+    df_app = run_query(conn, "05_submissions_by_weekday.sql")
+    df_rej = run_query(conn, "03_rejections_by_weekday.sql")
+
+    weekday_order = [
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+        "Sunday",
+    ]
+
+    df = (
+        df_app[["weekday", "count", "sort_order"]]
+        .rename(columns={"count": "submissions"})
+        .merge(
+            df_rej[["weekday", "count"]].rename(columns={"count": "rejections"}),
+            on="weekday",
+            how="outer",
+        )
+        .fillna(0)
+        .sort_values("sort_order")
     )
-    return fig
 
-
-def chart_applications_by_weekday(conn) -> go.Figure:
-    df = run_query(conn, "05_applications_by_weekday.sql")
-    print(f"[applications by weekday]\n{df.to_string()}\n")
-    fig = px.bar(
-        df,
-        x="weekday",
-        y="count",
-        title="Applications by Day of Week",
-        labels={"weekday": "Day", "count": "Applications"},
-        category_orders={
-            "weekday": [
-                "Monday",
-                "Tuesday",
-                "Wednesday",
-                "Thursday",
-                "Friday",
-                "Saturday",
-                "Sunday",
-            ]
-        },
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            x=df["weekday"],
+            y=df["submissions"],
+            name="Submissions",
+            marker_color=COLOR_SUBMISSIONS,
+            text=df["submissions"].astype(int),
+            textposition="outside",
+            textfont=dict(color=COLOR_SUBMISSIONS),
+        )
+    )
+    fig.add_trace(
+        go.Bar(
+            x=df["weekday"],
+            y=df["rejections"],
+            name="Rejections",
+            marker_color=COLOR_REJECTIONS,
+            text=df["rejections"].astype(int),
+            textposition="outside",
+            textfont=dict(color=COLOR_REJECTIONS),
+        )
+    )
+    fig.update_layout(
+        title="3 · Submissions and Rejections by Day of Week",
+        xaxis=dict(categoryorder="array", categoryarray=weekday_order),
+        yaxis_title="Count",
+        barmode="group",
+        hovermode="x unified",
     )
     return fig
 
 
 def chart_cumulative_timeline(conn) -> go.Figure:
-    df = run_query(conn, "04_cumulative_timeline.sql")
-    fig = go.Figure()
+    df_cum = run_query(conn, "04_cumulative_timeline.sql")
+    df_monthly = run_query(conn, "06_monthly_activity.sql")
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    # Monthly bars on secondary y-axis — with data labels
+    fig.add_trace(
+        go.Bar(
+            x=df_monthly["month"],
+            y=df_monthly["submissions"],
+            name="Submissions (monthly)",
+            opacity=0.35,
+            marker_color=COLOR_SUBMISSIONS,
+            text=df_monthly["submissions"],
+            textposition="outside",
+            textfont=dict(color=COLOR_SUBMISSIONS),
+        ),
+        secondary_y=True,
+    )
+
+    fig.add_trace(
+        go.Bar(
+            x=df_monthly["month"],
+            y=df_monthly["rejections"],
+            name="Rejections (monthly)",
+            opacity=0.35,
+            marker_color=COLOR_REJECTIONS,
+            text=df_monthly["rejections"],
+            textposition="outside",
+            textfont=dict(color=COLOR_REJECTIONS),
+        ),
+        secondary_y=True,
+    )
+
+    # Cumulative lines on primary y-axis — with end labels showing final value
+    n = len(df_cum)
+
+    def end_label(series):
+        return [""] * (n - 1) + [str(series.iloc[-1])]
+
     fig.add_trace(
         go.Scatter(
-            x=df["event_date"],
-            y=df["cumulative_applications"],
-            mode="lines",
-            name="Applications submitted",
-        )
+            x=df_cum["event_date"],
+            y=df_cum["cumulative_submissions"],
+            mode="lines+text",
+            name="Submissions (cumulative)",
+            line=dict(color=COLOR_SUBMISSIONS),
+            text=end_label(df_cum["cumulative_submissions"]),
+            textposition="middle right",
+            textfont=dict(color=COLOR_SUBMISSIONS),
+        ),
+        secondary_y=False,
     )
+
     fig.add_trace(
         go.Scatter(
-            x=df["event_date"],
-            y=df["cumulative_rejections"],
-            mode="lines",
-            name="Rejections received",
-        )
+            x=df_cum["event_date"],
+            y=df_cum["cumulative_rejections"],
+            mode="lines+text",
+            name="Rejections (cumulative)",
+            line=dict(color=COLOR_REJECTIONS),
+            text=end_label(df_cum["cumulative_rejections"]),
+            textposition="middle right",
+            textfont=dict(color=COLOR_REJECTIONS),
+        ),
+        secondary_y=False,
     )
+
     fig.add_trace(
         go.Scatter(
-            x=df["event_date"],
-            y=df["cumulative_interviews"],
-            mode="lines",
-            name="Interviews started",
-        )
+            x=df_cum["event_date"],
+            y=df_cum["cumulative_interviews"],
+            mode="lines+text",
+            name="Interviews (cumulative)",
+            line=dict(color=COLOR_INTERVIEWS),
+            text=end_label(df_cum["cumulative_interviews"]),
+            textposition="middle right",
+            textfont=dict(color=COLOR_INTERVIEWS),
+        ),
+        secondary_y=False,
     )
+
     fig.update_layout(
-        title="Cumulative Activity Over Time",
-        xaxis_title="Date",
-        yaxis_title="Cumulative Count",
+        title="4 · Submission and Rejection Activity Over Time",
         hovermode="x unified",
+        barmode="group",
+        # Extra right margin so end labels aren't clipped
+        margin=dict(r=80),
     )
+    fig.update_yaxes(title_text="Cumulative count", secondary_y=False)
+    fig.update_yaxes(title_text="Monthly count", secondary_y=True)
+    fig.update_xaxes(
+        dtick="M1",
+        tickformat="%b %Y",
+        tickangle=-45,
+        showgrid=True,
+        gridcolor="rgba(0,0,0,0.08)",
+    )
+
     return fig
 
 
@@ -284,8 +445,7 @@ if __name__ == "__main__":
     figures = [
         chart_status_overview(conn),
         chart_rejection_duration(conn),
-        chart_rejections_by_weekday(conn),
-        chart_applications_by_weekday(conn),
+        chart_weekday_activity(conn),
         chart_cumulative_timeline(conn),
     ]
     write_html(figures)
